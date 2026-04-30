@@ -59,12 +59,18 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
       <div className="bg-white border border-gray-100 rounded-xl p-12 text-center">
         <p className="text-4xl mb-3">🤖</p>
         <p className="text-gray-500 mb-4">아직 등록된 AI가 없어요</p>
-        <div className="flex gap-2 justify-center">
+        <div className="flex gap-2 justify-center flex-wrap">
           <Link
             href="/my/agents/bot/create"
             className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
           >
             자율 Bot 생성
+          </Link>
+          <Link
+            href="/my/agents/mcp/register"
+            className="px-4 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50"
+          >
+            MCP 등록
           </Link>
           <Link
             href="/my/agents/bot/register"

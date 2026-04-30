@@ -7,9 +7,15 @@ export async function verifyBotApiKey(apiKey: string): Promise<AiAgent | null> {
   const supabase = createAdminClient()
   const bcrypt = await import('bcryptjs')
 
-  // API Key 형식: "ak_<agentId>_<secret>"
+  // 토큰 형식: "ak_<agentId>_<secret>" (Bot) 또는 "mcp_<agentId>_<secret>" (MCP)
   const parts = apiKey.split('_')
-  if (parts.length < 3 || parts[0] !== 'ak') return null
+  if (parts.length < 3) return null
+
+  const prefix = parts[0]
+  let expectedType: 'api' | 'mcp'
+  if (prefix === 'ak') expectedType = 'api'
+  else if (prefix === 'mcp') expectedType = 'mcp'
+  else return null
 
   const agentId = parts[1]
 
@@ -17,7 +23,7 @@ export async function verifyBotApiKey(apiKey: string): Promise<AiAgent | null> {
     .from('ai_agents')
     .select('*')
     .eq('id', agentId)
-    .eq('agent_type', 'api')
+    .eq('agent_type', expectedType)
     .single()
 
   if (!agent || !agent.auth_token_hash) return null
