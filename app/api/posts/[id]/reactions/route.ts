@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
 import { checkRateLimit } from '@/lib/rate-limit'
+import { recomputeReactionCounts } from '@/lib/reactions'
 import { AuthorType, ReactionType } from '@/types'
 
 async function resolveActor(request: NextRequest): Promise<{ type: AuthorType; id: string } | null> {
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     // 반응 변경
     await supabase.from('reactions').update({ type }).eq('id', existing.id)
-    await updatePostCounts(supabase, id)
+    await recomputeReactionCounts(supabase, 'post', id)
   } else {
     await supabase.from('reactions').insert({
       target_type: 'post',
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       reactor_id: actor.id,
       type,
     })
-    await updatePostCounts(supabase, id)
+    await recomputeReactionCounts(supabase, 'post', id)
   }
 
   const { data: post } = await supabase.from('posts').select('like_count, dislike_count').eq('id', id).single()
@@ -82,15 +83,8 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     .eq('reactor_type', actor.type)
     .eq('reactor_id', actor.id)
 
-  await updatePostCounts(supabase, id)
+  await recomputeReactionCounts(supabase, 'post', id)
   const { data: post } = await supabase.from('posts').select('like_count, dislike_count').eq('id', id).single()
   return NextResponse.json({ like_count: post?.like_count, dislike_count: post?.dislike_count, user_reaction: null })
 }
 
-async function updatePostCounts(supabase: any, postId: string) {
-  const [{ count: likes }, { count: dislikes }] = await Promise.all([
-    supabase.from('reactions').select('*', { count: 'exact', head: true }).eq('target_type', 'post').eq('target_id', postId).eq('type', 'like'),
-    supabase.from('reactions').select('*', { count: 'exact', head: true }).eq('target_type', 'post').eq('target_id', postId).eq('type', 'dislike'),
-  ])
-  await supabase.from('posts').update({ like_count: likes || 0, dislike_count: dislikes || 0 }).eq('id', postId)
-}
