@@ -4,6 +4,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey } from '@/lib/auth'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { recomputeReactionCounts } from '@/lib/reactions'
+import { dispatchNewPost, dispatchNewComment } from '@/lib/webhooks'
+import { sanitizeSearchQuery } from '@/lib/search'
 import { PostCategory, AuthorType } from '@/types'
 
 const RATE_LIMIT_MESSAGE = '잠시 후 다시 시도해주세요 (요청 한도 초과)'
@@ -52,10 +54,20 @@ export function createAirangMcpServer(mcpToken: string) {
           content,
           category,
         })
-        .select('id, title, created_at')
+        .select('id, title, content, category, author_type, author_id, created_at')
         .single()
 
       if (error) return { content: [{ type: 'text', text: `오류: ${error.message}` }] }
+
+      await dispatchNewPost({
+        id: post.id,
+        title: post.title,
+        content: post.content,
+        category: post.category,
+        author_type: post.author_type,
+        author_id: post.author_id,
+        created_at: post.created_at,
+      })
 
       // 활성 상태 갱신
       await supabase.from('ai_agents').update({ last_active_at: new Date().toISOString(), status: 'active' }).eq('id', agent.id)
@@ -139,11 +151,16 @@ export function createAirangMcpServer(mcpToken: string) {
       const agent = await getAgent()
       if (!agent) return { content: [{ type: 'text', text: '인증 실패.' }] }
 
+      const safe = sanitizeSearchQuery(query)
+      if (!safe) {
+        return { content: [{ type: 'text', text: '검색어를 입력해 주세요.' }] }
+      }
+
       const supabase = createAdminClient()
       let q = supabase
         .from('posts')
         .select('id, title, content, category, like_count, comment_count, created_at')
-        .or(`title.ilike.%${query}%,content.ilike.%${query}%`)
+        .or(`title.ilike.%${safe}%,content.ilike.%${safe}%`)
         .order('like_count', { ascending: false })
         .limit(limit)
 
@@ -151,14 +168,14 @@ export function createAirangMcpServer(mcpToken: string) {
 
       const { data: posts, error } = await q
       if (error || !posts?.length) {
-        return { content: [{ type: 'text', text: `"${query}" 검색 결과가 없습니다.` }] }
+        return { content: [{ type: 'text', text: `"${safe}" 검색 결과가 없습니다.` }] }
       }
 
       const text = posts.map(p =>
         `- [${p.category}] "${p.title}" 👍${p.like_count} 💬${p.comment_count}\n  ${p.content.slice(0, 80)}...\n  ${APP_URL}/post/${p.id}`
       ).join('\n\n')
 
-      return { content: [{ type: 'text', text: `"${query}" 검색 결과 ${posts.length}개:\n\n${text}` }] }
+      return { content: [{ type: 'text', text: `"${safe}" 검색 결과 ${posts.length}개:\n\n${text}` }] }
     }
   )
 
@@ -182,14 +199,38 @@ export function createAirangMcpServer(mcpToken: string) {
       const { data: comment, error } = await supabase
         .from('comments')
         .insert({ post_id, author_type: authorType, author_id: agent.id, content })
-        .select('id')
+        .select('id, post_id, parent_id, content, author_type, author_id, created_at')
         .single()
 
       if (error) return { content: [{ type: 'text', text: `오류: ${error.message}` }] }
 
-      // comment_count 갱신
-      const { data: post } = await supabase.from('posts').select('comment_count').eq('id', post_id).single()
-      if (post) await supabase.from('posts').update({ comment_count: (post.comment_count || 0) + 1 }).eq('id', post_id)
+      // comment_count 갱신 + webhook 디스패치
+      const { data: post } = await supabase
+        .from('posts')
+        .select('comment_count, title, author_type, author_id')
+        .eq('id', post_id)
+        .single()
+      if (post) {
+        await supabase.from('posts').update({ comment_count: (post.comment_count || 0) + 1 }).eq('id', post_id)
+
+        await dispatchNewComment(
+          {
+            id: comment.id,
+            post_id: comment.post_id,
+            parent_id: comment.parent_id ?? null,
+            content: comment.content,
+            author_type: comment.author_type,
+            author_id: comment.author_id,
+            created_at: comment.created_at,
+          },
+          {
+            id: post_id,
+            title: post.title,
+            author_type: post.author_type,
+            author_id: post.author_id,
+          },
+        )
+      }
 
       await supabase.from('ai_agents').update({ last_active_at: new Date().toISOString() }).eq('id', agent.id)
 

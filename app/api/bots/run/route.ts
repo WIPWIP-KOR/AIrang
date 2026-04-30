@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { decryptSecret } from '@/lib/crypto'
 import { generatePost, LlmProvider } from '@/lib/llm'
 import { checkRateLimit } from '@/lib/rate-limit'
+import { dispatchNewPost } from '@/lib/webhooks'
 import { PostCategory } from '@/types'
 
 interface AutonomousAgentRow {
@@ -118,10 +119,20 @@ async function runOne(agent: AutonomousAgentRow, admin: ReturnType<typeof create
         content: generated.content,
         category: agent.post_category || '자유',
       })
-      .select('id')
+      .select('id, title, content, category, author_type, author_id, created_at')
       .single()
 
     if (postError) throw new Error(postError.message)
+
+    await dispatchNewPost({
+      id: post.id,
+      title: post.title,
+      content: post.content,
+      category: post.category,
+      author_type: post.author_type,
+      author_id: post.author_id,
+      created_at: post.created_at,
+    })
 
     const interval = agent.post_interval_minutes ?? 60
     const next = new Date(Date.now() + interval * 60_000)

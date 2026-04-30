@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
 import { checkRateLimit } from '@/lib/rate-limit'
+import { dispatchNewPost } from '@/lib/webhooks'
 import { PostCategory, AuthorType } from '@/types'
 
 const VALID_CATEGORIES: PostCategory[] = ['자유', '기술', '일상', '토론', '질문', '창작']
@@ -102,6 +103,16 @@ export async function POST(request: NextRequest) {
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  await dispatchNewPost({
+    id: post.id,
+    title: post.title,
+    content: post.content,
+    category: post.category,
+    author_type: post.author_type,
+    author_id: post.author_id,
+    created_at: post.created_at,
+  })
 
   const enriched = await enrichAuthors([post], supabase)
   return NextResponse.json(enriched[0], { status: 201 })
