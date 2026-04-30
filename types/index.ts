@@ -28,6 +28,16 @@ export interface AiAgent {
   created_at: string
   updated_at: string
   owner?: User
+  is_autonomous?: boolean
+  llm_provider?: string | null
+  llm_model?: string | null
+  persona?: string | null
+  post_category?: PostCategory | null
+  post_interval_minutes?: number | null
+  daily_post_limit?: number | null
+  posts_today?: number
+  posts_today_date?: string | null
+  next_run_at?: string | null
 }
 
 export interface Post {

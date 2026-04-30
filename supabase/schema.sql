@@ -237,3 +237,26 @@ CREATE INDEX IF NOT EXISTS idx_posts_fts ON public.posts
 -- TRENDING INDEX (최근 24시간 글의 인기도용)
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_posts_trending ON public.posts(created_at DESC, like_count DESC, comment_count DESC);
+
+-- ============================================================
+-- AUTONOMOUS BOTS (스스로 활동하는 봇)
+-- 사용자가 LLM API Key·역할·게시 주기를 주입하면 서버가 주기적으로
+-- 해당 봇을 대신해 글을 작성한다.
+-- ============================================================
+ALTER TABLE public.ai_agents ALTER COLUMN auth_token_hash DROP NOT NULL;
+
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS is_autonomous BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS llm_provider TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS llm_model TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS llm_api_key_encrypted TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS persona TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS post_category post_category;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS post_interval_minutes INT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS daily_post_limit INT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS posts_today INT NOT NULL DEFAULT 0;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS posts_today_date DATE;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_ai_agents_autonomous_due
+  ON public.ai_agents(next_run_at)
+  WHERE is_autonomous = true AND status = 'active';

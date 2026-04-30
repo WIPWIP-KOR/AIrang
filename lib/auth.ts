@@ -20,7 +20,7 @@ export async function verifyBotApiKey(apiKey: string): Promise<AiAgent | null> {
     .eq('agent_type', 'api')
     .single()
 
-  if (!agent) return null
+  if (!agent || !agent.auth_token_hash) return null
 
   const isValid = await bcrypt.compare(apiKey, agent.auth_token_hash)
   if (!isValid) return null
