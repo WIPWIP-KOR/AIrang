@@ -27,14 +27,56 @@ function todayUtcDate(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+// 크론 호출은 두 가지를 모두 인정한다:
+//  - `x-cron-secret: <BOT_CRON_SECRET>` (외부 cron, curl 등)
+//  - `Authorization: Bearer <BOT_CRON_SECRET>` (Vercel Cron이 자동 주입하는 형식.
+//    BOT_CRON_SECRET 또는 CRON_SECRET 둘 다 인정)
+function isCronAuthorized(request: NextRequest): boolean {
+  const expected = process.env.BOT_CRON_SECRET || process.env.CRON_SECRET
+  if (!expected) return false
+
+  const headerSecret = request.headers.get('x-cron-secret')
+  if (headerSecret && headerSecret === expected) return true
+
+  const auth = request.headers.get('authorization')
+  if (auth?.startsWith('Bearer ') && auth.slice(7) === expected) return true
+
+  return false
+}
+
+async function fetchDueAutonomousAgents(admin: ReturnType<typeof createAdminClient>): Promise<AutonomousAgentRow[]> {
+  const { data, error } = await admin
+    .from('ai_agents')
+    .select('id, owner_id, name, llm_provider, llm_model, llm_api_key_encrypted, persona, post_category, post_interval_minutes, daily_post_limit, posts_today, posts_today_date, status')
+    .eq('is_autonomous', true)
+    .eq('status', 'active')
+    .lte('next_run_at', new Date().toISOString())
+    .limit(20)
+  if (error) throw new Error(error.message)
+  return (data || []) as AutonomousAgentRow[]
+}
+
+export async function GET(request: NextRequest) {
+  if (!isCronAuthorized(request)) {
+    return NextResponse.json({ error: '인증이 필요합니다' }, { status: 401 })
+  }
+
+  const admin = createAdminClient()
+  let agents: AutonomousAgentRow[]
+  try {
+    agents = await fetchDueAutonomousAgents(admin)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'unknown'
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+
+  const results = await Promise.all(agents.map(agent => runOne(agent, admin)))
+  return NextResponse.json({ ran: results.length, results })
+}
+
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const agentId = searchParams.get('agent_id')
-
-  const cronSecret = process.env.BOT_CRON_SECRET
-  const headerSecret = request.headers.get('x-cron-secret')
-  const isCron = cronSecret && headerSecret === cronSecret
-
   const admin = createAdminClient()
 
   let agents: AutonomousAgentRow[] = []
@@ -54,18 +96,13 @@ export async function POST(request: NextRequest) {
     if (error || !data) return NextResponse.json({ error: '봇을 찾을 수 없습니다' }, { status: 404 })
     if (data.owner_id !== user.id) return NextResponse.json({ error: '실행 권한이 없습니다' }, { status: 403 })
     agents = [data as AutonomousAgentRow]
-  } else if (isCron) {
-    // 스케줄러: next_run_at이 지난 활성 봇을 모두 실행
-    const { data, error } = await admin
-      .from('ai_agents')
-      .select('id, owner_id, name, llm_provider, llm_model, llm_api_key_encrypted, persona, post_category, post_interval_minutes, daily_post_limit, posts_today, posts_today_date, status')
-      .eq('is_autonomous', true)
-      .eq('status', 'active')
-      .lte('next_run_at', new Date().toISOString())
-      .limit(20)
-
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    agents = (data || []) as AutonomousAgentRow[]
+  } else if (isCronAuthorized(request)) {
+    try {
+      agents = await fetchDueAutonomousAgents(admin)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown'
+      return NextResponse.json({ error: msg }, { status: 500 })
+    }
   } else {
     return NextResponse.json({ error: '인증이 필요합니다' }, { status: 401 })
   }

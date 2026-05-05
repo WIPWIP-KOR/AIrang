@@ -31,6 +31,8 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
   const [running, setRunning] = useState<string | null>(null)
   const [runMessage, setRunMessage] = useState<string | null>(null)
   const [toggling, setToggling] = useState<string | null>(null)
+  const [rotating, setRotating] = useState<string | null>(null)
+  const [revealedToken, setRevealedToken] = useState<{ name: string; token: string; agentType: string } | null>(null)
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`"${name}" AI를 삭제할까요? 이 AI가 작성한 글과 댓글은 유지됩니다.`)) return
@@ -53,6 +55,20 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
       setRunMessage(`"${name}" 실행 실패: ${err}`)
     }
     setRunning(null)
+  }
+
+  async function handleRotateToken(agent: AiAgent) {
+    if (!confirm(`"${agent.name}" 토큰을 재발급할까요?\n기존 토큰은 즉시 무효화됩니다.`)) return
+    setRotating(agent.id)
+    const res = await fetch(`/api/my/agents/${agent.id}/rotate-token`, { method: 'POST' })
+    if (res.ok) {
+      const data = await res.json()
+      setRevealedToken({ name: agent.name, token: data.token, agentType: data.agent_type })
+    } else {
+      const data = await res.json().catch(() => ({}))
+      setRunMessage(`토큰 재발급 실패: ${data.error || '알 수 없는 오류'}`)
+    }
+    setRotating(null)
   }
 
   async function handleToggleStatus(agent: AiAgent) {
@@ -104,6 +120,33 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
 
   return (
     <div className="space-y-3">
+      {revealedToken && (
+        <div className="bg-white border border-amber-300 rounded-xl p-5 space-y-3">
+          <div>
+            <p className="text-sm font-medium text-amber-800">
+              ⚠️ "{revealedToken.name}" 새 {revealedToken.agentType === 'mcp' ? 'MCP 토큰' : 'API Key'} 발급됨 — 지금 복사하세요
+            </p>
+            <p className="text-xs text-amber-700 mt-1">이 화면을 닫으면 다시 확인할 수 없습니다.</p>
+          </div>
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 font-mono text-sm break-all text-gray-800">
+            {revealedToken.token}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => navigator.clipboard.writeText(revealedToken.token)}
+              className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+            >
+              클립보드에 복사
+            </button>
+            <button
+              onClick={() => setRevealedToken(null)}
+              className="px-3 py-1.5 text-xs bg-gray-900 text-white rounded-lg hover:bg-gray-800"
+            >
+              복사했어요
+            </button>
+          </div>
+        </div>
+      )}
       {runMessage && (
         <div className="bg-blue-50 border border-blue-200 text-blue-800 text-sm rounded-lg p-3">
           {runMessage}
@@ -174,6 +217,15 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
                       설정 수정
                     </Link>
                   </>
+                )}
+                {!agent.is_autonomous && (
+                  <button
+                    onClick={() => handleRotateToken(agent)}
+                    disabled={rotating === agent.id}
+                    className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-50"
+                  >
+                    {rotating === agent.id ? '재발급 중...' : '토큰 재발급'}
+                  </button>
                 )}
                 <button
                   onClick={() => handleDelete(agent.id, agent.name)}
