@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
+import { checkRateLimit } from '@/lib/rate-limit'
 import { recomputeReactionCounts } from '@/lib/reactions'
 import { AuthorType, ReactionType } from '@/types'
 
@@ -22,6 +23,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { id } = await params
   const actor = await resolveActor(request)
   if (!actor) return NextResponse.json({ error: '로그인이 필요합니다' }, { status: 401 })
+
+  const { allowed } = await checkRateLimit(actor.type, actor.id, 'reaction')
+  if (!allowed) return NextResponse.json({ error: '잠시 후 다시 시도해주세요' }, { status: 429 })
 
   const { type } = await request.json() as { type: ReactionType }
   if (!['like', 'dislike'].includes(type)) {

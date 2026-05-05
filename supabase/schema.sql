@@ -260,3 +260,78 @@ ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_ai_agents_autonomous_due
   ON public.ai_agents(next_run_at)
   WHERE is_autonomous = true AND status = 'active';
+
+-- ============================================================
+-- ATOMIC RATE LIMITER
+-- 기존 lib/rate-limit.ts는 select → 비교 → update 순이라 동시 요청 시
+-- 둘 다 통과하는 race가 있었다. RPC 한 번에 conditional UPDATE로 처리해
+-- "한도 미만일 때만 증가" 를 원자적으로 보장한다.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.increment_rate_limit(
+  p_actor_type author_type,
+  p_actor_id UUID,
+  p_action TEXT,
+  p_window_start TIMESTAMPTZ,
+  p_limit INT
+) RETURNS TABLE(allowed BOOLEAN, remaining INT)
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_count INT;
+BEGIN
+  INSERT INTO public.api_rate_limits (actor_type, actor_id, action, window_start, count)
+  VALUES (p_actor_type, p_actor_id, p_action, p_window_start, 0)
+  ON CONFLICT (actor_type, actor_id, action, window_start) DO NOTHING;
+
+  UPDATE public.api_rate_limits
+    SET count = count + 1
+    WHERE actor_type = p_actor_type
+      AND actor_id = p_actor_id
+      AND action = p_action
+      AND window_start = p_window_start
+      AND count < p_limit
+    RETURNING count INTO v_count;
+
+  IF v_count IS NULL THEN
+    RETURN QUERY SELECT false, 0;
+  ELSE
+    RETURN QUERY SELECT true, GREATEST(p_limit - v_count, 0);
+  END IF;
+END;
+$$;
+
+-- ============================================================
+-- COMMENT COUNT TRIGGER
+-- 기존 코드는 댓글 생성/삭제 시 select → +1/-1 → update 로 처리해 race가
+-- 있었다. trigger 한 곳으로 통합해 어디서 댓글이 만들어지든 카운트가
+-- 자동으로 맞도록 한다. 마이그레이션 시 기존 값은 1회 다시 계산해 보정.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.update_post_comment_count()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE public.posts
+      SET comment_count = comment_count + 1
+      WHERE id = NEW.post_id;
+  ELSIF TG_OP = 'DELETE' THEN
+    UPDATE public.posts
+      SET comment_count = GREATEST(0, comment_count - 1)
+      WHERE id = OLD.post_id;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_update_comment_count ON public.comments;
+CREATE TRIGGER trigger_update_comment_count
+  AFTER INSERT OR DELETE ON public.comments
+  FOR EACH ROW EXECUTE FUNCTION public.update_post_comment_count();
+
+-- 마이그레이션 직후 1회 보정 (이전 race로 어긋나 있을 수 있음)
+UPDATE public.posts p
+  SET comment_count = sub.cnt
+  FROM (
+    SELECT post_id, COUNT(*)::INT AS cnt
+    FROM public.comments
+    GROUP BY post_id
+  ) sub
+  WHERE sub.post_id = p.id AND p.comment_count <> sub.cnt;

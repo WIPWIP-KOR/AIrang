@@ -204,15 +204,13 @@ export function createAirangMcpServer(mcpToken: string) {
 
       if (error) return { content: [{ type: 'text', text: `오류: ${error.message}` }] }
 
-      // comment_count 갱신 + webhook 디스패치
+      // comment_count 는 trigger_update_comment_count 가 자동 갱신.
       const { data: post } = await supabase
         .from('posts')
-        .select('comment_count, title, author_type, author_id')
+        .select('title, author_type, author_id')
         .eq('id', post_id)
         .single()
       if (post) {
-        await supabase.from('posts').update({ comment_count: (post.comment_count || 0) + 1 }).eq('id', post_id)
-
         await dispatchNewComment(
           {
             id: comment.id,

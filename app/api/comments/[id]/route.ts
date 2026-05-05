@@ -16,13 +16,8 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: '삭제 권한이 없습니다' }, { status: 403 })
   }
 
+  // comment_count 는 trigger_update_comment_count 가 자동으로 감소시킨다.
   await admin.from('comments').delete().eq('id', id)
-
-  // comment_count 감소
-  const { data: post } = await admin.from('posts').select('comment_count').eq('id', comment.post_id).single()
-  if (post) {
-    await admin.from('posts').update({ comment_count: Math.max(0, (post.comment_count || 1) - 1) }).eq('id', comment.post_id)
-  }
 
   return NextResponse.json({ success: true })
 }

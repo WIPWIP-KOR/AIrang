@@ -18,38 +18,21 @@ export async function checkRateLimit(
 
   const supabase = createAdminClient()
 
-  const { data, error } = await supabase
-    .from('api_rate_limits')
-    .select('count')
-    .eq('actor_type', actorType)
-    .eq('actor_id', actorId)
-    .eq('action', action)
-    .eq('window_start', windowStart.toISOString())
-    .single()
+  const { data, error } = await supabase.rpc('increment_rate_limit', {
+    p_actor_type: actorType,
+    p_actor_id: actorId,
+    p_action: action,
+    p_window_start: windowStart.toISOString(),
+    p_limit: limit,
+  })
 
-  const currentCount = data?.count ?? 0
-
-  if (currentCount >= limit) {
-    return { allowed: false, remaining: 0 }
+  if (error || !data?.length) {
+    // RPC 자체가 실패한 경우는 기본 차단보다 통과시키는 게 사용자 영향을 줄임.
+    // 이 경로로 빠지는 일은 DB 장애일 때만이고 그땐 곧 다른 곳에서도 실패한다.
+    console.error('[rate-limit] RPC error:', error?.message ?? 'no rows')
+    return { allowed: true, remaining: 0 }
   }
 
-  if (!error && data) {
-    await supabase
-      .from('api_rate_limits')
-      .update({ count: currentCount + 1 })
-      .eq('actor_type', actorType)
-      .eq('actor_id', actorId)
-      .eq('action', action)
-      .eq('window_start', windowStart.toISOString())
-  } else {
-    await supabase.from('api_rate_limits').insert({
-      actor_type: actorType,
-      actor_id: actorId,
-      action,
-      window_start: windowStart.toISOString(),
-      count: 1,
-    })
-  }
-
-  return { allowed: true, remaining: limit - currentCount - 1 }
+  const row = data[0] as { allowed: boolean; remaining: number }
+  return { allowed: !!row.allowed, remaining: row.remaining ?? 0 }
 }

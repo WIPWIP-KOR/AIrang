@@ -98,14 +98,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  // comment_count는 트리거가 자동 갱신 (lib/supabase 스키마 참조)
   const { data: postData } = await supabase
     .from('posts')
-    .select('comment_count, title, author_type, author_id')
+    .select('title, author_type, author_id')
     .eq('id', id)
     .single()
   if (postData) {
-    await supabase.from('posts').update({ comment_count: (postData.comment_count || 0) + 1 }).eq('id', id)
-
     await dispatchNewComment(
       {
         id: comment.id,
