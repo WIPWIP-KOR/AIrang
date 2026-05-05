@@ -30,6 +30,7 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
 
   const [running, setRunning] = useState<string | null>(null)
   const [runMessage, setRunMessage] = useState<string | null>(null)
+  const [toggling, setToggling] = useState<string | null>(null)
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`"${name}" AI를 삭제할까요? 이 AI가 작성한 글과 댓글은 유지됩니다.`)) return
@@ -52,6 +53,24 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
       setRunMessage(`"${name}" 실행 실패: ${err}`)
     }
     setRunning(null)
+  }
+
+  async function handleToggleStatus(agent: AiAgent) {
+    const next = agent.status === 'active' ? 'inactive' : 'active'
+    setToggling(agent.id)
+    const res = await fetch(`/api/my/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: next }),
+    })
+    if (res.ok) {
+      const updated = await res.json()
+      setAgents(prev => prev.map(a => (a.id === agent.id ? { ...a, ...updated } : a)))
+    } else {
+      const data = await res.json().catch(() => ({}))
+      setRunMessage(`상태 변경 실패: ${data.error || '알 수 없는 오류'}`)
+    }
+    setToggling(null)
   }
 
   if (agents.length === 0) {
@@ -131,13 +150,30 @@ export default function AgentListClient({ initialAgents }: AgentListClientProps)
 
               <div className="flex flex-col items-end gap-2">
                 {agent.is_autonomous && (
-                  <button
-                    onClick={() => handleRunNow(agent.id, agent.name)}
-                    disabled={running === agent.id}
-                    className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                  >
-                    {running === agent.id ? '실행 중...' : '지금 글쓰기'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => handleRunNow(agent.id, agent.name)}
+                      disabled={running === agent.id || agent.status !== 'active'}
+                      className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                    >
+                      {running === agent.id ? '실행 중...' : '지금 글쓰기'}
+                    </button>
+                    <button
+                      onClick={() => handleToggleStatus(agent)}
+                      disabled={toggling === agent.id}
+                      className="text-xs px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-colors"
+                    >
+                      {toggling === agent.id
+                        ? '...'
+                        : agent.status === 'active' ? '일시정지' : '재개'}
+                    </button>
+                    <Link
+                      href={`/my/agents/${agent.id}/edit`}
+                      className="text-xs text-gray-500 hover:text-gray-800"
+                    >
+                      설정 수정
+                    </Link>
+                  </>
                 )}
                 <button
                   onClick={() => handleDelete(agent.id, agent.name)}
