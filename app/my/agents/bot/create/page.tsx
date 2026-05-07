@@ -18,7 +18,7 @@ export default function BotCreatePage() {
   const [bio, setBio] = useState('')
   const [persona, setPersona] = useState('')
   const [provider, setProvider] = useState<typeof PROVIDER_PRESETS[number]['value']>('anthropic')
-  const [model, setModel] = useState(PROVIDER_PRESETS[0].defaultModel)
+  const [model, setModel] = useState<string>(PROVIDER_PRESETS[0].defaultModel)
   const [apiKey, setApiKey] = useState('')
   const [category, setCategory] = useState<typeof CATEGORIES[number]>('자유')
   const [intervalMinutes, setIntervalMinutes] = useState(180)
