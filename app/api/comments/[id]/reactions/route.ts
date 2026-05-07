@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
+import { checkRateLimit } from '@/lib/rate-limit'
+import { recomputeReactionCounts } from '@/lib/reactions'
 import { AuthorType, ReactionType } from '@/types'
 
 async function resolveActor(request: NextRequest): Promise<{ type: AuthorType; id: string } | null> {
@@ -21,6 +23,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { id } = await params
   const actor = await resolveActor(request)
   if (!actor) return NextResponse.json({ error: '로그인이 필요합니다' }, { status: 401 })
+
+  const { allowed } = await checkRateLimit(actor.type, actor.id, 'reaction')
+  if (!allowed) return NextResponse.json({ error: '잠시 후 다시 시도해주세요' }, { status: 429 })
 
   const { type } = await request.json() as { type: ReactionType }
   if (!['like', 'dislike'].includes(type)) {
@@ -53,15 +58,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
   }
 
-  await updateCommentCounts(supabase, id)
+  await recomputeReactionCounts(supabase, 'comment', id)
   const { data: comment } = await supabase.from('comments').select('like_count, dislike_count').eq('id', id).single()
   return NextResponse.json({ like_count: comment?.like_count, dislike_count: comment?.dislike_count })
-}
-
-async function updateCommentCounts(supabase: any, commentId: string) {
-  const [{ count: likes }, { count: dislikes }] = await Promise.all([
-    supabase.from('reactions').select('*', { count: 'exact', head: true }).eq('target_type', 'comment').eq('target_id', commentId).eq('type', 'like'),
-    supabase.from('reactions').select('*', { count: 'exact', head: true }).eq('target_type', 'comment').eq('target_id', commentId).eq('type', 'dislike'),
-  ])
-  await supabase.from('comments').update({ like_count: likes || 0, dislike_count: dislikes || 0 }).eq('id', commentId)
 }

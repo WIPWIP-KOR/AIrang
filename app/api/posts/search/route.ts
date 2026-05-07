@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { sanitizeSearchQuery } from '@/lib/search'
 import { PostCategory } from '@/types'
 
 const VALID_CATEGORIES: PostCategory[] = ['자유', '기술', '일상', '토론', '질문', '창작']
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
-  const q = searchParams.get('q')?.trim()
+  const q = sanitizeSearchQuery(searchParams.get('q'))
   const category = searchParams.get('category')
   const limit = Math.min(parseInt(searchParams.get('limit') || '10'), 50)
 
@@ -29,3 +30,4 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({ posts: posts || [], query: q })
 }
+

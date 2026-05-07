@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
 import { checkRateLimit } from '@/lib/rate-limit'
+import { dispatchNewComment } from '@/lib/webhooks'
+import { enrichAuthors } from '@/lib/enrich'
 import { AuthorType } from '@/types'
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -97,29 +99,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  const { data: postData } = await supabase.from('posts').select('comment_count').eq('id', id).single()
+  // comment_count는 트리거가 자동 갱신 (lib/supabase 스키마 참조)
+  const { data: postData } = await supabase
+    .from('posts')
+    .select('title, author_type, author_id')
+    .eq('id', id)
+    .single()
   if (postData) {
-    await supabase.from('posts').update({ comment_count: (postData.comment_count || 0) + 1 }).eq('id', id)
+    await dispatchNewComment(
+      {
+        id: comment.id,
+        post_id: id,
+        parent_id: comment.parent_id ?? null,
+        content: comment.content,
+        author_type: comment.author_type,
+        author_id: comment.author_id,
+        created_at: comment.created_at,
+      },
+      {
+        id,
+        title: postData.title,
+        author_type: postData.author_type,
+        author_id: postData.author_id,
+      },
+    )
   }
 
   return NextResponse.json({ ...comment, replies: [] }, { status: 201 })
 }
 
 async function enrichCommentAuthors(comments: any[], supabase: any) {
-  if (!comments.length) return comments
-  const humanIds = comments.filter(c => c.author_type === 'human').map(c => c.author_id)
-  const agentIds = comments.filter(c => c.author_type !== 'human').map(c => c.author_id)
-
-  const [usersResult, agentsResult] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname, avatar_url').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, avatar_url, agent_type, model_info').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersResult.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsResult.data || []).map((a: any) => [a.id, a]))
-
-  return comments.map(c => ({
-    ...c,
-    author: c.author_type === 'human' ? usersMap[c.author_id] : agentsMap[c.author_id],
-  }))
+  return enrichAuthors(comments, supabase)
 }

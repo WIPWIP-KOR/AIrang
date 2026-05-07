@@ -2,7 +2,18 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey } from '@/lib/auth'
+import { checkRateLimit } from '@/lib/rate-limit'
+import { recomputeReactionCounts } from '@/lib/reactions'
+import { dispatchNewPost, dispatchNewComment } from '@/lib/webhooks'
+import { sanitizeSearchQuery } from '@/lib/search'
+import { enrichAuthors } from '@/lib/enrich'
 import { PostCategory, AuthorType } from '@/types'
+
+const RATE_LIMIT_MESSAGE = '잠시 후 다시 시도해주세요 (요청 한도 초과)'
+
+function rateLimitText(): { content: { type: 'text'; text: string }[] } {
+  return { content: [{ type: 'text', text: RATE_LIMIT_MESSAGE }] }
+}
 
 const VALID_CATEGORIES: PostCategory[] = ['자유', '기술', '일상', '토론', '질문', '창작']
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
@@ -30,20 +41,34 @@ export function createAirangMcpServer(mcpToken: string) {
       const agent = await getAgent()
       if (!agent) return { content: [{ type: 'text', text: '인증 실패: 유효하지 않은 MCP 토큰입니다.' }] }
 
+      const authorType: AuthorType = agent.agent_type === 'mcp' ? 'mcp' : 'bot'
+      const { allowed } = await checkRateLimit(authorType, agent.id, 'post')
+      if (!allowed) return rateLimitText()
+
       const supabase = createAdminClient()
       const { data: post, error } = await supabase
         .from('posts')
         .insert({
-          author_type: agent.agent_type === 'mcp' ? 'mcp' : 'bot' as AuthorType,
+          author_type: authorType,
           author_id: agent.id,
           title,
           content,
           category,
         })
-        .select('id, title, created_at')
+        .select('id, title, content, category, author_type, author_id, created_at')
         .single()
 
       if (error) return { content: [{ type: 'text', text: `오류: ${error.message}` }] }
+
+      await dispatchNewPost({
+        id: post.id,
+        title: post.title,
+        content: post.content,
+        category: post.category,
+        author_type: post.author_type,
+        author_id: post.author_id,
+        created_at: post.created_at,
+      })
 
       // 활성 상태 갱신
       await supabase.from('ai_agents').update({ last_active_at: new Date().toISOString(), status: 'active' }).eq('id', agent.id)
@@ -127,11 +152,16 @@ export function createAirangMcpServer(mcpToken: string) {
       const agent = await getAgent()
       if (!agent) return { content: [{ type: 'text', text: '인증 실패.' }] }
 
+      const safe = sanitizeSearchQuery(query)
+      if (!safe) {
+        return { content: [{ type: 'text', text: '검색어를 입력해 주세요.' }] }
+      }
+
       const supabase = createAdminClient()
       let q = supabase
         .from('posts')
         .select('id, title, content, category, like_count, comment_count, created_at')
-        .or(`title.ilike.%${query}%,content.ilike.%${query}%`)
+        .or(`title.ilike.%${safe}%,content.ilike.%${safe}%`)
         .order('like_count', { ascending: false })
         .limit(limit)
 
@@ -139,14 +169,14 @@ export function createAirangMcpServer(mcpToken: string) {
 
       const { data: posts, error } = await q
       if (error || !posts?.length) {
-        return { content: [{ type: 'text', text: `"${query}" 검색 결과가 없습니다.` }] }
+        return { content: [{ type: 'text', text: `"${safe}" 검색 결과가 없습니다.` }] }
       }
 
       const text = posts.map(p =>
         `- [${p.category}] "${p.title}" 👍${p.like_count} 💬${p.comment_count}\n  ${p.content.slice(0, 80)}...\n  ${APP_URL}/post/${p.id}`
       ).join('\n\n')
 
-      return { content: [{ type: 'text', text: `"${query}" 검색 결과 ${posts.length}개:\n\n${text}` }] }
+      return { content: [{ type: 'text', text: `"${safe}" 검색 결과 ${posts.length}개:\n\n${text}` }] }
     }
   )
 
@@ -161,20 +191,45 @@ export function createAirangMcpServer(mcpToken: string) {
       const agent = await getAgent()
       if (!agent) return { content: [{ type: 'text', text: '인증 실패.' }] }
 
-      const supabase = createAdminClient()
       const authorType: AuthorType = agent.agent_type === 'mcp' ? 'mcp' : 'bot'
+      const { allowed } = await checkRateLimit(authorType, agent.id, 'comment')
+      if (!allowed) return rateLimitText()
+
+      const supabase = createAdminClient()
 
       const { data: comment, error } = await supabase
         .from('comments')
         .insert({ post_id, author_type: authorType, author_id: agent.id, content })
-        .select('id')
+        .select('id, post_id, parent_id, content, author_type, author_id, created_at')
         .single()
 
       if (error) return { content: [{ type: 'text', text: `오류: ${error.message}` }] }
 
-      // comment_count 갱신
-      const { data: post } = await supabase.from('posts').select('comment_count').eq('id', post_id).single()
-      if (post) await supabase.from('posts').update({ comment_count: (post.comment_count || 0) + 1 }).eq('id', post_id)
+      // comment_count 는 trigger_update_comment_count 가 자동 갱신.
+      const { data: post } = await supabase
+        .from('posts')
+        .select('title, author_type, author_id')
+        .eq('id', post_id)
+        .single()
+      if (post) {
+        await dispatchNewComment(
+          {
+            id: comment.id,
+            post_id: comment.post_id,
+            parent_id: comment.parent_id ?? null,
+            content: comment.content,
+            author_type: comment.author_type,
+            author_id: comment.author_id,
+            created_at: comment.created_at,
+          },
+          {
+            id: post_id,
+            title: post.title,
+            author_type: post.author_type,
+            author_id: post.author_id,
+          },
+        )
+      }
 
       await supabase.from('ai_agents').update({ last_active_at: new Date().toISOString() }).eq('id', agent.id)
 
@@ -194,8 +249,11 @@ export function createAirangMcpServer(mcpToken: string) {
       const agent = await getAgent()
       if (!agent) return { content: [{ type: 'text', text: '인증 실패.' }] }
 
-      const supabase = createAdminClient()
       const actorType: AuthorType = agent.agent_type === 'mcp' ? 'mcp' : 'bot'
+      const { allowed } = await checkRateLimit(actorType, agent.id, 'reaction')
+      if (!allowed) return rateLimitText()
+
+      const supabase = createAdminClient()
 
       const { data: existing } = await supabase
         .from('reactions')
@@ -206,12 +264,15 @@ export function createAirangMcpServer(mcpToken: string) {
         .eq('reactor_id', agent.id)
         .single()
 
+      let resultText: string
       if (existing) {
         if (existing.type === type) {
           await supabase.from('reactions').delete().eq('id', existing.id)
-          return { content: [{ type: 'text', text: '반응을 취소했습니다.' }] }
+          resultText = '반응을 취소했습니다.'
+        } else {
+          await supabase.from('reactions').update({ type }).eq('id', existing.id)
+          resultText = `${type === 'like' ? '👍' : '👎'} 반응으로 변경했습니다.`
         }
-        await supabase.from('reactions').update({ type }).eq('id', existing.id)
       } else {
         await supabase.from('reactions').insert({
           target_type,
@@ -220,9 +281,12 @@ export function createAirangMcpServer(mcpToken: string) {
           reactor_id: agent.id,
           type,
         })
+        resultText = `${type === 'like' ? '👍' : '👎'} 반응을 등록했습니다.`
       }
 
-      return { content: [{ type: 'text', text: `${type === 'like' ? '👍' : '👎'} 반응을 등록했습니다.` }] }
+      await recomputeReactionCounts(supabase, target_type, target_id)
+
+      return { content: [{ type: 'text', text: resultText }] }
     }
   )
 
@@ -230,20 +294,12 @@ export function createAirangMcpServer(mcpToken: string) {
 }
 
 async function enrichComments(comments: any[], supabase: any) {
-  const humanIds = comments.filter(c => c.author_type === 'human').map(c => c.author_id)
-  const agentIds = comments.filter(c => c.author_type !== 'human').map(c => c.author_id)
-
-  const [usersRes, agentsRes] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, agent_type').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersRes.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsRes.data || []).map((a: any) => [a.id, a]))
-
-  return comments.map(c => {
-    const author = c.author_type === 'human' ? usersMap[c.author_id] : agentsMap[c.author_id]
-    const name = author?.nickname || author?.name || '알 수 없음'
+  const enriched = await enrichAuthors(comments, supabase, {
+    userColumns: 'id, nickname',
+    agentColumns: 'id, name, agent_type',
+  })
+  return enriched.map(c => {
+    const name = c.author?.nickname || c.author?.name || '알 수 없음'
     const typeLabel = c.author_type === 'human' ? '🧑' : '🤖'
     return { ...c, authorLabel: `${typeLabel} ${name}` }
   })

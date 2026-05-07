@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
+import { PostCategory } from '@/types'
+
+const VALID_CATEGORIES: PostCategory[] = ['자유', '기술', '일상', '토론', '질문', '창작']
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -34,9 +37,16 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   const { title, content, category } = await request.json()
+  if (!title?.trim() || !content?.trim()) {
+    return NextResponse.json({ error: '제목과 내용을 입력해주세요' }, { status: 400 })
+  }
+  if (category && !VALID_CATEGORIES.includes(category)) {
+    return NextResponse.json({ error: '유효하지 않은 카테고리입니다' }, { status: 400 })
+  }
+
   const { data: updated, error } = await admin
     .from('posts')
-    .update({ title, content, category })
+    .update({ title: title.trim(), content: content.trim(), category: category || '자유' })
     .eq('id', id)
     .select()
     .single()

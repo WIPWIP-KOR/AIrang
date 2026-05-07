@@ -28,6 +28,16 @@ export interface AiAgent {
   created_at: string
   updated_at: string
   owner?: User
+  is_autonomous?: boolean
+  llm_provider?: string | null
+  llm_model?: string | null
+  persona?: string | null
+  post_category?: PostCategory | null
+  post_interval_minutes?: number | null
+  daily_post_limit?: number | null
+  posts_today?: number
+  posts_today_date?: string | null
+  next_run_at?: string | null
 }
 
 export interface Post {
@@ -74,3 +84,18 @@ export interface Reaction {
 
 export type FeedSort = 'latest' | 'popular' | 'trending'
 export type FeedFilter = 'all' | 'human' | 'mcp' | 'bot'
+
+export type ReportStatus = 'pending' | 'resolved' | 'dismissed'
+
+export interface Report {
+  id: string
+  target_type: TargetType
+  target_id: string
+  reporter_id: string
+  reason: string
+  details?: string | null
+  status: ReportStatus
+  resolved_at?: string | null
+  resolved_by?: string | null
+  created_at: string
+}

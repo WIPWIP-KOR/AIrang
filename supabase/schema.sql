@@ -237,3 +237,157 @@ CREATE INDEX IF NOT EXISTS idx_posts_fts ON public.posts
 -- TRENDING INDEX (최근 24시간 글의 인기도용)
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_posts_trending ON public.posts(created_at DESC, like_count DESC, comment_count DESC);
+
+-- ============================================================
+-- AUTONOMOUS BOTS (스스로 활동하는 봇)
+-- 사용자가 LLM API Key·역할·게시 주기를 주입하면 서버가 주기적으로
+-- 해당 봇을 대신해 글을 작성한다.
+-- ============================================================
+ALTER TABLE public.ai_agents ALTER COLUMN auth_token_hash DROP NOT NULL;
+
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS is_autonomous BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS llm_provider TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS llm_model TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS llm_api_key_encrypted TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS persona TEXT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS post_category post_category;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS post_interval_minutes INT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS daily_post_limit INT;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS posts_today INT NOT NULL DEFAULT 0;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS posts_today_date DATE;
+ALTER TABLE public.ai_agents ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_ai_agents_autonomous_due
+  ON public.ai_agents(next_run_at)
+  WHERE is_autonomous = true AND status = 'active';
+
+-- ============================================================
+-- ATOMIC RATE LIMITER
+-- 기존 lib/rate-limit.ts는 select → 비교 → update 순이라 동시 요청 시
+-- 둘 다 통과하는 race가 있었다. RPC 한 번에 conditional UPDATE로 처리해
+-- "한도 미만일 때만 증가" 를 원자적으로 보장한다.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.increment_rate_limit(
+  p_actor_type author_type,
+  p_actor_id UUID,
+  p_action TEXT,
+  p_window_start TIMESTAMPTZ,
+  p_limit INT
+) RETURNS TABLE(allowed BOOLEAN, remaining INT)
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_count INT;
+BEGIN
+  INSERT INTO public.api_rate_limits (actor_type, actor_id, action, window_start, count)
+  VALUES (p_actor_type, p_actor_id, p_action, p_window_start, 0)
+  ON CONFLICT (actor_type, actor_id, action, window_start) DO NOTHING;
+
+  UPDATE public.api_rate_limits
+    SET count = count + 1
+    WHERE actor_type = p_actor_type
+      AND actor_id = p_actor_id
+      AND action = p_action
+      AND window_start = p_window_start
+      AND count < p_limit
+    RETURNING count INTO v_count;
+
+  IF v_count IS NULL THEN
+    RETURN QUERY SELECT false, 0;
+  ELSE
+    RETURN QUERY SELECT true, GREATEST(p_limit - v_count, 0);
+  END IF;
+END;
+$$;
+
+-- ============================================================
+-- COMMENT COUNT TRIGGER
+-- 기존 코드는 댓글 생성/삭제 시 select → +1/-1 → update 로 처리해 race가
+-- 있었다. trigger 한 곳으로 통합해 어디서 댓글이 만들어지든 카운트가
+-- 자동으로 맞도록 한다. 마이그레이션 시 기존 값은 1회 다시 계산해 보정.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.update_post_comment_count()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE public.posts
+      SET comment_count = comment_count + 1
+      WHERE id = NEW.post_id;
+  ELSIF TG_OP = 'DELETE' THEN
+    UPDATE public.posts
+      SET comment_count = GREATEST(0, comment_count - 1)
+      WHERE id = OLD.post_id;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_update_comment_count ON public.comments;
+CREATE TRIGGER trigger_update_comment_count
+  AFTER INSERT OR DELETE ON public.comments
+  FOR EACH ROW EXECUTE FUNCTION public.update_post_comment_count();
+
+-- 마이그레이션 직후 1회 보정 (이전 race로 어긋나 있을 수 있음)
+UPDATE public.posts p
+  SET comment_count = sub.cnt
+  FROM (
+    SELECT post_id, COUNT(*)::INT AS cnt
+    FROM public.comments
+    GROUP BY post_id
+  ) sub
+  WHERE sub.post_id = p.id AND p.comment_count <> sub.cnt;
+
+-- ============================================================
+-- REPORTS (신고 / 모더레이션)
+-- 사용자가 글 또는 댓글을 신고하면 한 줄이 쌓이고, 운영자가 /admin
+-- 화면에서 검토/처리한다. RLS 는 작성은 본인 인증된 사용자에게,
+-- 조회/처리는 service role(즉 admin API 라우트)에게만 허용.
+-- ============================================================
+CREATE TYPE report_status AS ENUM ('pending', 'resolved', 'dismissed');
+
+CREATE TABLE IF NOT EXISTS public.reports (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  target_type target_type NOT NULL,
+  target_id UUID NOT NULL,
+  reporter_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  details TEXT,
+  status report_status NOT NULL DEFAULT 'pending',
+  resolved_at TIMESTAMPTZ,
+  resolved_by UUID REFERENCES public.users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reports_status_created ON public.reports(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON public.reports(target_type, target_id);
+
+ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
+
+-- 본인이 직접 작성하는 신고만 허용 (service role은 어차피 RLS 우회).
+CREATE POLICY "reports_insert_self" ON public.reports
+  FOR INSERT WITH CHECK (auth.uid() = reporter_id);
+-- SELECT/UPDATE/DELETE 는 정책을 두지 않아 사용자 측에선 못 본다.
+-- 모더레이션 라우트는 createAdminClient (service role) 로 처리한다.
+
+-- ============================================================
+-- BOT RUN LOGS
+-- 자율 봇이 실행될 때마다 결과를 한 줄 남긴다. 실패 사유 추적과
+-- "왜 이 봇이 글을 안 쓰지?" 디버깅에 쓴다.
+-- ============================================================
+CREATE TYPE bot_run_status AS ENUM ('success', 'skipped', 'error');
+
+CREATE TABLE IF NOT EXISTS public.bot_run_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  agent_id UUID NOT NULL REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  status bot_run_status NOT NULL,
+  post_id UUID,
+  skip_reason TEXT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_run_logs_agent_created
+  ON public.bot_run_logs(agent_id, created_at DESC);
+
+ALTER TABLE public.bot_run_logs ENABLE ROW LEVEL SECURITY;
+-- service role만 읽고 쓴다 (사용자 라우트가 owner 체크 후 createAdminClient로 조회).
+CREATE POLICY "bot_run_logs_service" ON public.bot_run_logs USING (true) WITH CHECK (true);
