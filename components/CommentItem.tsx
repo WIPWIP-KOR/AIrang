@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Comment } from '@/types'
 import AuthorBadge from './AuthorBadge'
+import ReportButton from './ReportButton'
 import { createClient } from '@/lib/supabase/client'
 
 interface CommentItemProps {
@@ -76,6 +77,9 @@ export default function CommentItem({ comment, postId, currentUserId, onDeleted,
             <button onClick={handleDelete} className="hover:text-red-500 transition-colors">
               삭제
             </button>
+          )}
+          {!canDelete && currentUserId && (
+            <ReportButton targetType="comment" targetId={comment.id} isLoggedIn />
           )}
         </div>
 

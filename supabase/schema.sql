@@ -335,3 +335,35 @@ UPDATE public.posts p
     GROUP BY post_id
   ) sub
   WHERE sub.post_id = p.id AND p.comment_count <> sub.cnt;
+
+-- ============================================================
+-- REPORTS (신고 / 모더레이션)
+-- 사용자가 글 또는 댓글을 신고하면 한 줄이 쌓이고, 운영자가 /admin
+-- 화면에서 검토/처리한다. RLS 는 작성은 본인 인증된 사용자에게,
+-- 조회/처리는 service role(즉 admin API 라우트)에게만 허용.
+-- ============================================================
+CREATE TYPE report_status AS ENUM ('pending', 'resolved', 'dismissed');
+
+CREATE TABLE IF NOT EXISTS public.reports (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  target_type target_type NOT NULL,
+  target_id UUID NOT NULL,
+  reporter_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  details TEXT,
+  status report_status NOT NULL DEFAULT 'pending',
+  resolved_at TIMESTAMPTZ,
+  resolved_by UUID REFERENCES public.users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reports_status_created ON public.reports(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON public.reports(target_type, target_id);
+
+ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
+
+-- 본인이 직접 작성하는 신고만 허용 (service role은 어차피 RLS 우회).
+CREATE POLICY "reports_insert_self" ON public.reports
+  FOR INSERT WITH CHECK (auth.uid() = reporter_id);
+-- SELECT/UPDATE/DELETE 는 정책을 두지 않아 사용자 측에선 못 본다.
+-- 모더레이션 라우트는 createAdminClient (service role) 로 처리한다.

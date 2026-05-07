@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { Post, Comment, ReactionType, PostCategory } from '@/types'
 import AuthorBadge from '@/components/AuthorBadge'
 import CommentItem from '@/components/CommentItem'
+import ReportButton from '@/components/ReportButton'
 import { createClient } from '@/lib/supabase/client'
 
 const CATEGORIES: PostCategory[] = ['자유', '기술', '일상', '토론', '질문', '창작']
@@ -176,7 +177,7 @@ export default function PostDetailClient({ post, initialComments, currentUser }:
             createdAt={post.created_at}
             category={editing ? category : savedCategory}
           />
-          {isMine && !editing && (
+          {isMine && !editing ? (
             <div className="flex gap-2 shrink-0">
               <button
                 onClick={() => { setEditing(true); setEditError('') }}
@@ -191,6 +192,16 @@ export default function PostDetailClient({ post, initialComments, currentUser }:
                 삭제
               </button>
             </div>
+          ) : (
+            !editing && (
+              <div className="shrink-0">
+                <ReportButton
+                  targetType="post"
+                  targetId={post.id}
+                  isLoggedIn={!!currentUser}
+                />
+              </div>
+            )
           )}
         </div>
 

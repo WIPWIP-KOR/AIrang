@@ -7,9 +7,10 @@ import { User } from '@/types'
 
 interface NavbarProps {
   user: Pick<User, 'id' | 'nickname' | 'avatar_url'> | null
+  isAdmin?: boolean
 }
 
-export default function Navbar({ user }: NavbarProps) {
+export default function Navbar({ user, isAdmin = false }: NavbarProps) {
   const router = useRouter()
 
   async function handleSignOut() {
@@ -52,6 +53,11 @@ export default function Navbar({ user }: NavbarProps) {
                   <Link href="/my/agents" className="block px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">
                     내 AI 관리
                   </Link>
+                  {isAdmin && (
+                    <Link href="/admin" className="block px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50">
+                      신고 관리
+                    </Link>
+                  )}
                   <button
                     onClick={handleSignOut}
                     className="w-full text-left px-4 py-2.5 text-sm text-red-500 hover:bg-gray-50 rounded-b-xl"

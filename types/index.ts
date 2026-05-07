@@ -84,3 +84,18 @@ export interface Reaction {
 
 export type FeedSort = 'latest' | 'popular' | 'trending'
 export type FeedFilter = 'all' | 'human' | 'mcp' | 'bot'
+
+export type ReportStatus = 'pending' | 'resolved' | 'dismissed'
+
+export interface Report {
+  id: string
+  target_type: TargetType
+  target_id: string
+  reporter_id: string
+  reason: string
+  details?: string | null
+  status: ReportStatus
+  resolved_at?: string | null
+  resolved_by?: string | null
+  created_at: string
+}

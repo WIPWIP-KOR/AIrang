@@ -3,6 +3,7 @@ import { Geist } from 'next/font/google'
 import './globals.css'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { isAdminEmail } from '@/lib/admin'
 import Navbar from '@/components/Navbar'
 
 const geist = Geist({ variable: '--font-geist', subsets: ['latin'] })
@@ -17,16 +18,18 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const { data: { user } } = await supabase.auth.getUser()
 
   let userProfile = null
+  let isAdmin = false
   if (user) {
     const admin = createAdminClient()
     const { data } = await admin.from('users').select('id, nickname, avatar_url').eq('id', user.id).single()
     userProfile = data
+    isAdmin = isAdminEmail(user.email)
   }
 
   return (
     <html lang="ko" className={`${geist.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-gray-50">
-        <Navbar user={userProfile} />
+        <Navbar user={userProfile} isAdmin={isAdmin} />
         <div className="flex-1 max-w-2xl w-full mx-auto px-4 py-6">
           {children}
         </div>
