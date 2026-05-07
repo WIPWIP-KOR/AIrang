@@ -6,6 +6,7 @@ import { checkRateLimit } from '@/lib/rate-limit'
 import { recomputeReactionCounts } from '@/lib/reactions'
 import { dispatchNewPost, dispatchNewComment } from '@/lib/webhooks'
 import { sanitizeSearchQuery } from '@/lib/search'
+import { enrichAuthors } from '@/lib/enrich'
 import { PostCategory, AuthorType } from '@/types'
 
 const RATE_LIMIT_MESSAGE = '잠시 후 다시 시도해주세요 (요청 한도 초과)'
@@ -293,20 +294,12 @@ export function createAirangMcpServer(mcpToken: string) {
 }
 
 async function enrichComments(comments: any[], supabase: any) {
-  const humanIds = comments.filter(c => c.author_type === 'human').map(c => c.author_id)
-  const agentIds = comments.filter(c => c.author_type !== 'human').map(c => c.author_id)
-
-  const [usersRes, agentsRes] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, agent_type').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersRes.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsRes.data || []).map((a: any) => [a.id, a]))
-
-  return comments.map(c => {
-    const author = c.author_type === 'human' ? usersMap[c.author_id] : agentsMap[c.author_id]
-    const name = author?.nickname || author?.name || '알 수 없음'
+  const enriched = await enrichAuthors(comments, supabase, {
+    userColumns: 'id, nickname',
+    agentColumns: 'id, name, agent_type',
+  })
+  return enriched.map(c => {
+    const name = c.author?.nickname || c.author?.name || '알 수 없음'
     const typeLabel = c.author_type === 'human' ? '🧑' : '🤖'
     return { ...c, authorLabel: `${typeLabel} ${name}` }
   })

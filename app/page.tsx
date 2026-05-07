@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { enrichAuthors } from '@/lib/enrich'
 import PostCard from '@/components/PostCard'
 import FeedFilter from '@/components/FeedFilter'
 import Link from 'next/link'
@@ -61,22 +62,9 @@ async function PostList({ sort, filter, category, page }: {
     ? [...posts].sort((a, b) => (b.like_count * 2 + b.comment_count) - (a.like_count * 2 + a.comment_count))
     : posts
 
-  // 작성자 정보 조회
-  const humanIds = [...new Set(sortedPosts.filter(p => p.author_type === 'human').map(p => p.author_id))]
-  const agentIds = [...new Set(sortedPosts.filter(p => p.author_type !== 'human').map(p => p.author_id))]
-
-  const [usersRes, agentsRes] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname, avatar_url').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, avatar_url, agent_type, model_info, status').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersRes.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsRes.data || []).map((a: any) => [a.id, a]))
-
-  const postsWithAuthors: Post[] = sortedPosts.map(p => ({
-    ...p,
-    author: p.author_type === 'human' ? usersMap[p.author_id] : agentsMap[p.author_id],
-  }))
+  const postsWithAuthors = await enrichAuthors(sortedPosts, supabase, {
+    agentColumns: 'id, name, avatar_url, agent_type, model_info, status',
+  }) as Post[]
 
   return (
     <div className="space-y-3">

@@ -4,7 +4,18 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { dispatchNewPost } from '@/lib/webhooks'
+import { enrichAuthors } from '@/lib/enrich'
 import { PostCategory, AuthorType } from '@/types'
+
+const POSTS_USER_COLUMNS = 'id, nickname, avatar_url'
+const POSTS_AGENT_COLUMNS = 'id, name, avatar_url, agent_type, model_info, status'
+
+function enrichPostAuthors<T extends { author_type: AuthorType; author_id: string }>(rows: T[], supabase: any) {
+  return enrichAuthors(rows, supabase, {
+    userColumns: POSTS_USER_COLUMNS,
+    agentColumns: POSTS_AGENT_COLUMNS,
+  })
+}
 
 const VALID_CATEGORIES: PostCategory[] = ['자유', '기술', '일상', '토론', '질문', '창작']
 
@@ -41,7 +52,7 @@ export async function GET(request: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   // 작성자 정보 조회
-  const postsWithAuthors = await enrichAuthors(posts || [], supabase)
+  const postsWithAuthors = await enrichPostAuthors(posts || [], supabase)
 
   return NextResponse.json({ posts: postsWithAuthors, page, limit })
 }
@@ -114,26 +125,6 @@ export async function POST(request: NextRequest) {
     created_at: post.created_at,
   })
 
-  const enriched = await enrichAuthors([post], supabase)
+  const enriched = await enrichPostAuthors([post], supabase)
   return NextResponse.json(enriched[0], { status: 201 })
-}
-
-async function enrichAuthors(posts: any[], supabase: any) {
-  if (!posts.length) return posts
-
-  const humanIds = posts.filter(p => p.author_type === 'human').map(p => p.author_id)
-  const agentIds = posts.filter(p => p.author_type !== 'human').map(p => p.author_id)
-
-  const [usersResult, agentsResult] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname, avatar_url').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, avatar_url, agent_type, model_info, status').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersResult.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsResult.data || []).map((a: any) => [a.id, a]))
-
-  return posts.map(post => ({
-    ...post,
-    author: post.author_type === 'human' ? usersMap[post.author_id] : agentsMap[post.author_id],
-  }))
 }

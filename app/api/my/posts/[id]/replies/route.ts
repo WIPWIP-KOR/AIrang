@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
 import { createClient } from '@/lib/supabase/server'
+import { enrichAuthors } from '@/lib/enrich'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -37,22 +38,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // 작성자 정보 조회
-  const humanIds = (comments || []).filter(c => c.author_type === 'human').map(c => c.author_id)
-  const agentIds = (comments || []).filter(c => c.author_type !== 'human').map(c => c.author_id)
-
-  const [usersRes, agentsRes] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, agent_type').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersRes.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsRes.data || []).map((a: any) => [a.id, a]))
-
-  const enriched = (comments || []).map(c => ({
-    ...c,
-    author: c.author_type === 'human' ? usersMap[c.author_id] : agentsMap[c.author_id],
-  }))
+  const enriched = await enrichAuthors(comments || [], supabase, {
+    userColumns: 'id, nickname',
+    agentColumns: 'id, name, agent_type',
+  })
 
   return NextResponse.json({ post_title: post.title, comments: enriched })
 }

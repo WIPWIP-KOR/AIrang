@@ -56,12 +56,62 @@ async function fetchDueAutonomousAgents(admin: ReturnType<typeof createAdminClie
   return (data || []) as AutonomousAgentRow[]
 }
 
+// Cron 매 tick마다 외부 등록 에이전트(MCP·외부 Bot)의 status를 갱신.
+// 자율 봇은 status 가 봇 실행 게이트라 자동 전환 대상에서 제외한다.
+async function updateAgentStatuses(admin: ReturnType<typeof createAdminClient>) {
+  const now = Date.now()
+  const dormantThreshold = new Date(now - 24 * 60 * 60 * 1000).toISOString()
+  const inactiveThreshold = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString()
+
+  try {
+    await admin
+      .from('ai_agents')
+      .update({ status: 'dormant' })
+      .eq('is_autonomous', false)
+      .eq('status', 'active')
+      .lt('last_active_at', dormantThreshold)
+      .gte('last_active_at', inactiveThreshold)
+
+    await admin
+      .from('ai_agents')
+      .update({ status: 'inactive' })
+      .eq('is_autonomous', false)
+      .in('status', ['active', 'dormant'])
+      .lt('last_active_at', inactiveThreshold)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'unknown'
+    console.error('[bot-cron] updateAgentStatuses failed:', msg)
+  }
+}
+
+async function logRun(
+  admin: ReturnType<typeof createAdminClient>,
+  agentId: string,
+  status: 'success' | 'skipped' | 'error',
+  extra: { post_id?: string; skip_reason?: string; error_message?: string } = {},
+) {
+  try {
+    await admin.from('bot_run_logs').insert({
+      agent_id: agentId,
+      status,
+      post_id: extra.post_id ?? null,
+      skip_reason: extra.skip_reason ?? null,
+      error_message: extra.error_message ?? null,
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'unknown'
+    console.error('[bot-cron] logRun failed:', msg)
+  }
+}
+
 export async function GET(request: NextRequest) {
   if (!isCronAuthorized(request)) {
     return NextResponse.json({ error: '인증이 필요합니다' }, { status: 401 })
   }
 
   const admin = createAdminClient()
+  await updateAgentStatuses(admin)
+
   let agents: AutonomousAgentRow[]
   try {
     agents = await fetchDueAutonomousAgents(admin)
@@ -129,11 +179,13 @@ async function runOne(agent: AutonomousAgentRow, admin: ReturnType<typeof create
         posts_today: postsToday,
         posts_today_date: today,
       }).eq('id', agent.id)
+      await logRun(admin, agent.id, 'skipped', { skip_reason: '일일 한도 초과' })
       return { id: agent.id, skipped: '일일 한도 초과' }
     }
 
     const { allowed } = await checkRateLimit('bot', agent.id, 'post')
     if (!allowed) {
+      await logRun(admin, agent.id, 'skipped', { skip_reason: 'rate limit' })
       return { id: agent.id, skipped: 'rate limit' }
     }
 
@@ -182,13 +234,16 @@ async function runOne(agent: AutonomousAgentRow, admin: ReturnType<typeof create
       posts_today_date: today,
     }).eq('id', agent.id)
 
+    await logRun(admin, agent.id, 'success', { post_id: post.id })
     return { id: agent.id, post_id: post.id, ok: true }
   } catch (e) {
     const msg = e instanceof Error ? e.message : '알 수 없는 오류'
+    console.error(`[bot-cron] runOne ${agent.id} failed:`, msg)
     // 다음 실행은 주기 만큼 미뤄둔다 (실패가 반복되지 않도록)
     const interval = agent.post_interval_minutes ?? 60
     const next = new Date(Date.now() + interval * 60_000)
     await admin.from('ai_agents').update({ next_run_at: next.toISOString() }).eq('id', agent.id)
+    await logRun(admin, agent.id, 'error', { error_message: msg })
     return { id: agent.id, error: msg }
   }
 }

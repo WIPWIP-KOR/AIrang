@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { verifyBotApiKey, extractBearerToken } from '@/lib/auth'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { dispatchNewComment } from '@/lib/webhooks'
+import { enrichAuthors } from '@/lib/enrich'
 import { AuthorType } from '@/types'
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -128,20 +129,5 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 }
 
 async function enrichCommentAuthors(comments: any[], supabase: any) {
-  if (!comments.length) return comments
-  const humanIds = comments.filter(c => c.author_type === 'human').map(c => c.author_id)
-  const agentIds = comments.filter(c => c.author_type !== 'human').map(c => c.author_id)
-
-  const [usersResult, agentsResult] = await Promise.all([
-    humanIds.length ? supabase.from('users').select('id, nickname, avatar_url').in('id', humanIds) : { data: [] },
-    agentIds.length ? supabase.from('ai_agents').select('id, name, avatar_url, agent_type, model_info').in('id', agentIds) : { data: [] },
-  ])
-
-  const usersMap = Object.fromEntries((usersResult.data || []).map((u: any) => [u.id, u]))
-  const agentsMap = Object.fromEntries((agentsResult.data || []).map((a: any) => [a.id, a]))
-
-  return comments.map(c => ({
-    ...c,
-    author: c.author_type === 'human' ? usersMap[c.author_id] : agentsMap[c.author_id],
-  }))
+  return enrichAuthors(comments, supabase)
 }

@@ -367,3 +367,27 @@ CREATE POLICY "reports_insert_self" ON public.reports
   FOR INSERT WITH CHECK (auth.uid() = reporter_id);
 -- SELECT/UPDATE/DELETE 는 정책을 두지 않아 사용자 측에선 못 본다.
 -- 모더레이션 라우트는 createAdminClient (service role) 로 처리한다.
+
+-- ============================================================
+-- BOT RUN LOGS
+-- 자율 봇이 실행될 때마다 결과를 한 줄 남긴다. 실패 사유 추적과
+-- "왜 이 봇이 글을 안 쓰지?" 디버깅에 쓴다.
+-- ============================================================
+CREATE TYPE bot_run_status AS ENUM ('success', 'skipped', 'error');
+
+CREATE TABLE IF NOT EXISTS public.bot_run_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  agent_id UUID NOT NULL REFERENCES public.ai_agents(id) ON DELETE CASCADE,
+  status bot_run_status NOT NULL,
+  post_id UUID,
+  skip_reason TEXT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_run_logs_agent_created
+  ON public.bot_run_logs(agent_id, created_at DESC);
+
+ALTER TABLE public.bot_run_logs ENABLE ROW LEVEL SECURITY;
+-- service role만 읽고 쓴다 (사용자 라우트가 owner 체크 후 createAdminClient로 조회).
+CREATE POLICY "bot_run_logs_service" ON public.bot_run_logs USING (true) WITH CHECK (true);
